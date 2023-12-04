@@ -22,13 +22,13 @@ class BlockPuzzleEnv(gym.Env):
         self.num_blocks = len(blocks)
         self.width = 9
         self.height = 9
-        self.action_space = gym.spaces.MultiDiscrete([self.width, self.height, self.num_blocks])
-        self.observation_space = gym.spaces.Tuple((
-            gym.spaces.Box(low=0, high=1, shape=(self.height, self.width), dtype=np.int32),  # The 9x9 grid
-            gym.spaces.Box(low=0, high=1, shape=(5, 5), dtype=np.int32),  # First 5x5 block matrix
-            gym.spaces.Box(low=0, high=1, shape=(5, 5), dtype=np.int32),  # Second 5x5 block matrix
-            gym.spaces.Box(low=0, high=1, shape=(5, 5), dtype=np.int32)  # Third 5x5 block matrix
-        ))
+        self.action_space = gym.spaces.MultiDiscrete([self.width, self.height, 3])
+        self.observation_space = gym.spaces.Dict({
+            "grid": gym.spaces.Box(low=0, high=1, shape=(self.height, self.width), dtype=np.int32),  # The 9x9 grid
+            "first_block": gym.spaces.Box(low=0, high=1, shape=(5, 5), dtype=np.int32),  # First 5x5 block matrix
+            "second_block": gym.spaces.Box(low=0, high=1, shape=(5, 5), dtype=np.int32),  # Second 5x5 block matrix
+            "third_block": gym.spaces.Box(low=0, high=1, shape=(5, 5), dtype=np.int32)  # Third 5x5 block matrix
+        })
         self.current_blocks = [None, None, None]
         self.grid = None
         self.step_count = 0
@@ -46,58 +46,58 @@ class BlockPuzzleEnv(gym.Env):
     def step(self, action):
         pos_x, pos_y, block_choice_index = action
         reward = 0
-        terminated = False
-        self.step_count += 1
 
-        # Check if the step_count limit has been reached
-        if self.step_count > 100_000:
-            return self._get_obs(), reward, terminated, True, self._get_info()
+        # Early return if step_count limit reached
+        if self.step_count > 1000:
+            return self._finalize_step(reward, terminated=False, truncated=True)
 
-        # Check if the block choice is valid
-        if self.current_blocks[block_choice_index] is None:
-            reward -= 1
-            return self._get_obs(), reward, terminated, False, self._get_info()
+        # Check if block choice is valid
+        if block_choice_index >= len(self.current_blocks):
+            return self._finalize_step(reward)
 
-        # Get block coordinates
         block_id = self.current_blocks[block_choice_index]
+
+        # Apply negative reward for invalid block choice
+        if block_id is None:
+            reward -= 1
+            return self._finalize_step(reward)
+
+        # Proceed with valid block placement
+        return self._process_block_placement(block_id, block_choice_index, pos_x, pos_y, reward)
+
+    def _finalize_step(self, reward, terminated=False, truncated=False):
+        self.step_count += 1
+        if self.render_mode == "human":
+            self._render_frame()
+        return self._get_obs(), reward, terminated, truncated, self._get_info()
+
+    def _process_block_placement(self, block_id, block_choice_index, pos_x, pos_y, reward):
         block_coords = self.blocks[block_id]["coords"]
 
-        # Check for feasibility
+        # Check for feasibility and apply placement
         if not self._is_placement_feasible(block_coords, pos_x, pos_y):
-            reward -= 1  # Small punishment for infeasible placement
-            return self._get_obs(), reward, terminated, False, self._get_info()
+            reward -= 0.1  # Small punishment for infeasible placement
+            return self._finalize_step(reward)
 
-        # Place the block on the grid
+        # Place the block
+        self.num_occupied = np.sum(self.grid)
         for coord in block_coords:
             x, y = pos_x + coord[0], pos_y + coord[1]
             self.grid[y][x] = 1
-
-        # Update block availability
         self.current_blocks[block_choice_index] = None
 
         # Resample blocks if all are used
         if not any(self.current_blocks):
             self.current_blocks = list(np.random.choice(self.num_blocks, 3))  # Select 3 unique blocks
 
-        # Check and clear full rows, columns, and 3x3 areas
-        reward += self.check_and_clear_full_areas()
+        reward += self._check_and_clear_full_areas([(pos_x + coord[0], pos_y + coord[1]) for coord in block_coords])
+        terminated = not self._any_feasible_moves()
 
-        # Check if no moves are possible
-        if not self._any_feasible_moves():
-            terminated = True
+        return self._finalize_step(reward, terminated=terminated)
 
-        return self._get_obs(), reward, terminated, False, self._get_info()
-
-    def _get_obs(self):
-        # Construct the observation state with a 9x9 grid and 5x5 matrices
-        matrices = [self.blocks[block_id]["matrix"] if block_id is not None else np.zeros((5, 5), dtype=np.int32)
-                    for block_id in self.current_blocks]
-        return self.grid, *matrices
-
-    def check_and_clear_full_areas(self):
+    def _check_and_clear_full_areas(self, placed_block_coords):
         reward = 0
         num_cleared = 0
-        num_occupied = np.sum(self.grid)
         coords_to_clear = []
 
         # Check rows and columns
@@ -134,7 +134,8 @@ class BlockPuzzleEnv(gym.Env):
         for x, y in coords_to_clear:
             self.grid[y][x] = 0
 
-        reward += (np.sum(self.grid) + len(coords_to_clear) - num_occupied)
+        # Add a reward for every placed block coord not in the coords to clear
+        reward += len([coord for coord in placed_block_coords if coord not in coords_to_clear])
         self.score += reward
         return reward
 
@@ -160,6 +161,7 @@ class BlockPuzzleEnv(gym.Env):
         self.grid = np.zeros((9, 9), dtype=np.int32)
         self.current_blocks = list(np.random.choice(self.num_blocks, 3))
 
+        self.step_count = 0
         if self.render_mode == "human":
             self._render_frame()
 
@@ -180,7 +182,11 @@ class BlockPuzzleEnv(gym.Env):
         canvas = pygame.Surface((self.window_size, self.window_size))
         canvas.fill((255, 255, 255))
 
-        grid, *block_matrices = self._get_obs()  # Unpack the grid and block matrices
+        grid = self.grid
+        block_matrices = [
+            self.blocks[block_id]["matrix"] if block_id is not None else np.zeros((5, 5), dtype=np.int32)
+            for block_id in self.current_blocks
+        ]
 
         # Draw the 9x9 grid
         for x in range(9):
@@ -229,6 +235,21 @@ class BlockPuzzleEnv(gym.Env):
             return np.transpose(
                 np.array(pygame.surfarray.pixels3d(canvas)), axes=(1, 0, 2)
             )
+
+    def _get_obs(self):
+        # Create matrices for the current blocks
+        matrices = [
+            self.blocks[block_id]["matrix"] if block_id is not None else np.zeros((5, 5), dtype=np.int32)
+            for block_id in self.current_blocks
+        ]
+
+        # Construct and return the observation state
+        return {
+            "grid": self.grid,
+            "first_block": matrices[0],
+            "second_block": matrices[1],
+            "third_block": matrices[2]
+        }
 
     def _get_info(self):
         return {"step_count": self.step_count,
