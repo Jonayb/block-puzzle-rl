@@ -22,7 +22,7 @@ class BlockPuzzleEnv(gym.Env):
         self.num_blocks = len(blocks)
         self.width = 9
         self.height = 9
-        self.action_space = gym.spaces.MultiDiscrete([self.width, self.height, 3])
+        self.action_space = gym.spaces.MultiDiscrete([self.width, self.height, self.num_blocks])
         self.observation_space = gym.spaces.Dict({
             "grid": gym.spaces.Box(low=0, high=1, shape=(self.height, self.width), dtype=np.int32),  # The 9x9 grid
             "first_block": gym.spaces.Box(low=0, high=1, shape=(5, 5), dtype=np.int32),  # First 5x5 block matrix
@@ -44,7 +44,7 @@ class BlockPuzzleEnv(gym.Env):
         self.cell_size = self.window_size // 15
 
     def step(self, action):
-        pos_x, pos_y, block_choice_index = action
+        pos_x, pos_y, block_choice = action
         reward = 0
 
         # Early return if step_count limit reached
@@ -261,3 +261,20 @@ class BlockPuzzleEnv(gym.Env):
         if self.window is not None:
             pygame.display.quit()
             pygame.quit()
+
+    def action_masks(self):
+        action_masks = np.zeros((self.width, self.height, self.num_blocks)).astype(bool)
+        for block_id, block_values in self.blocks.items():
+            for x in range(self.width):
+                for y in range(self.height):
+                    if self._is_placement_feasible(block_values["coords"], x, y):
+                        action_masks[x, y, block_id] = True
+            print(f"Block {block_id} feasible positions: {np.sum(action_masks[:, :, block_id])}")
+        return action_masks
+
+
+if __name__ == "__main__":
+    env = BlockPuzzleEnv(render_mode="human")
+    state, info = env.reset()
+    action_masks = env.action_masks()
+    print(action_masks)
