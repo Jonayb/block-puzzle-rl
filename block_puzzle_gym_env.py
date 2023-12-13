@@ -22,13 +22,8 @@ class BlockPuzzleEnv(gym.Env):
         self.num_blocks = len(blocks)
         self.width = 9
         self.height = 9
-        self.action_space = gym.spaces.MultiDiscrete([self.width, self.height, self.num_blocks])
-        self.observation_space = gym.spaces.Dict({
-            "grid": gym.spaces.Box(low=0, high=1, shape=(self.height, self.width), dtype=np.int32),  # The 9x9 grid
-            "first_block": gym.spaces.Box(low=0, high=1, shape=(5, 5), dtype=np.int32),  # First 5x5 block matrix
-            "second_block": gym.spaces.Box(low=0, high=1, shape=(5, 5), dtype=np.int32),  # Second 5x5 block matrix
-            "third_block": gym.spaces.Box(low=0, high=1, shape=(5, 5), dtype=np.int32)  # Third 5x5 block matrix
-        })
+        self.action_space = gym.spaces.Discrete(self.width * self.height * self.num_blocks)
+        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(self.height, self.width), dtype=np.int32)  # The 9x9 grid
         self.current_blocks = [None, None, None]
         self.grid = None
         self.step_count = 0
@@ -44,26 +39,26 @@ class BlockPuzzleEnv(gym.Env):
         self.cell_size = self.window_size // 15
 
     def step(self, action):
-        pos_x, pos_y, block_choice = action
+        pos_x, pos_y, block_choice = self.action_id_to_action(action)
+        block_choice_index = None
         reward = 0
 
         # Early return if step_count limit reached
         if self.step_count > 1000:
             return self._finalize_step(reward, terminated=False, truncated=True)
 
-        # Check if block choice is valid
-        if block_choice_index >= len(self.current_blocks):
-            return self._finalize_step(reward)
-
-        block_id = self.current_blocks[block_choice_index]
+        # Get block choice index
+        for block_index, block_id in enumerate(self.current_blocks):
+            if block_choice == block_id:
+                block_choice_index = block_index
 
         # Apply negative reward for invalid block choice
-        if block_id is None:
+        if block_choice_index is None:
             reward -= 1
             return self._finalize_step(reward)
 
         # Proceed with valid block placement
-        return self._process_block_placement(block_id, block_choice_index, pos_x, pos_y, reward)
+        return self._process_block_placement(block_choice, block_choice_index, pos_x, pos_y, reward)
 
     def _finalize_step(self, reward, terminated=False, truncated=False):
         self.step_count += 1
@@ -71,12 +66,12 @@ class BlockPuzzleEnv(gym.Env):
             self._render_frame()
         return self._get_obs(), reward, terminated, truncated, self._get_info()
 
-    def _process_block_placement(self, block_id, block_choice_index, pos_x, pos_y, reward):
-        block_coords = self.blocks[block_id]["coords"]
+    def _process_block_placement(self, block_choice, block_choice_index, pos_x, pos_y, reward):
+        block_coords = self.blocks[block_choice]["coords"]
 
         # Check for feasibility and apply placement
         if not self._is_placement_feasible(block_coords, pos_x, pos_y):
-            reward -= 0.1  # Small punishment for infeasible placement
+            reward -= 1  # Small punishment for infeasible placement
             return self._finalize_step(reward)
 
         # Place the block
@@ -237,19 +232,7 @@ class BlockPuzzleEnv(gym.Env):
             )
 
     def _get_obs(self):
-        # Create matrices for the current blocks
-        matrices = [
-            self.blocks[block_id]["matrix"] if block_id is not None else np.zeros((5, 5), dtype=np.int32)
-            for block_id in self.current_blocks
-        ]
-
-        # Construct and return the observation state
-        return {
-            "grid": self.grid,
-            "first_block": matrices[0],
-            "second_block": matrices[1],
-            "third_block": matrices[2]
-        }
+        return self.grid
 
     def _get_info(self):
         return {"step_count": self.step_count,
@@ -263,18 +246,28 @@ class BlockPuzzleEnv(gym.Env):
             pygame.quit()
 
     def action_masks(self):
-        action_masks = np.zeros((self.width, self.height, self.num_blocks)).astype(bool)
-        for block_id, block_values in self.blocks.items():
-            for x in range(self.width):
-                for y in range(self.height):
-                    if self._is_placement_feasible(block_values["coords"], x, y):
-                        action_masks[x, y, block_id] = True
-            print(f"Block {block_id} feasible positions: {np.sum(action_masks[:, :, block_id])}")
-        return action_masks
+        # Initialize the masks as False for all actions
+        masks = np.zeros(self.width * self.height * self.num_blocks, dtype=bool)
 
+        # Loop over the current blocks
+        for block_id in self.current_blocks:
+            if block_id is not None:
+                block_values = self.blocks[block_id]
 
-if __name__ == "__main__":
-    env = BlockPuzzleEnv(render_mode="human")
-    state, info = env.reset()
-    action_masks = env.action_masks()
-    print(action_masks)
+                # Check for each position if the placement is feasible
+                for x in range(self.width):
+                    for y in range(self.height):
+                        if self._is_placement_feasible(block_values["coords"], x, y):
+                            action_id = self.action_to_action_id((x, y, block_id))
+                            masks[action_id] = True
+        return masks
+
+    def action_id_to_action(self, action: int) -> Tuple:
+        block = action % self.num_blocks
+        y = (action // self.num_blocks) % self.height
+        x = action // (self.num_blocks * self.height)
+        return x, y, block
+
+    def action_to_action_id(self, action: Tuple) -> int:
+        x, y, block = action
+        return block + y * self.num_blocks + x * self.num_blocks * self.height

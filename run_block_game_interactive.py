@@ -17,7 +17,7 @@ while running:
         if random or input("Random action? (y/n): ") == "y":
             random = True
         if random:
-            action = (np.random.randint(0, env.width), np.random.randint(0, env.height), np.random.randint(0, 3))
+            action = env.action_space.sample()
         else:
             block_choice = input("Enter block choice: ")
             x_pos = input("Enter x position: ")
@@ -29,8 +29,9 @@ while running:
             except ValueError:
                 print("Invalid input. Please try again.")
                 continue
-            action = (x_pos, y_pos, block_choice)
+            action = env.action_to_action_id((x_pos, y_pos, block_choice))
         state, reward, terminated, truncated, info = env.step(action)
+        env.action_masks()
         print(f"Action: {action}, State: {state}, Reward: {reward}, Done: {terminated}, Info: {info}")
 
         if terminated:
